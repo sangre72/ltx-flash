@@ -149,12 +149,30 @@ N-ahead prefetch가 가능한 이유: 다음 블록 번호가 항상 현재+1로
 
 **다른 모델(FLUX.1, SD3, Wan 등)** — 부분 포팅 필요.
 
-- `BlockIndex`, `SSDBlockLoader` — **재사용 가능** (핵심 엔진)
-- `SSDStreamingLTXModel` — **새로 작성** (모델별 블록 키 패턴, 비블록 가중치 목록, forward() 방식이 다름)
+- `BlockIndex`, `SSDBlockLoader` — **재사용 가능** (블록 키 패턴만 변경)
+- `SSDStreamingXxxModel` — **새로 작성** (모델별 블록 키 패턴, 비블록 가중치 목록, forward() 방식 다름)
 - `generate.py` — **새로 작성** (파이프라인 연결)
 - 전제 조건: 해당 모델의 MLX 포팅이 존재해야 함
 
-가장 유력한 다음 타겟: **FLUX.1** (`mlx-community/FLUX.1-dev-4bit`, DiT 57블록, 블록 구조 LTX와 유사)
+**포팅 후보 우선순위:**
+
+| 모델 | 블록 수 | BF16 크기 | MLX 포팅 | 난이도 | 특이사항 |
+|------|---------|-----------|---------|--------|---------|
+| **FLUX.1** | 57 (19+38) | ~23.8GB | mflux (성숙) | 하~중 | Double/Single 2종 블록 |
+| **Wan 2.1 14B** | 40 | ~28.6GB | mlx-video | 중~상 | 비디오, 블록당 ~715MB |
+| **SD3.5 Large** | 38 | ~16.5GB | DiffusionKit | 중 | 키 패턴 LTX와 유사 |
+| **HiDream-I1** | 48 (16+32) | ~34GB | 없음 | 상 | MoE 구조, MLX 포팅 없음 |
+
+**FLUX.1 블록 키 패턴:**
+```
+double_blocks.{N}.*   (N=0~18, Double Stream)
+single_blocks.{N}.*   (N=0~37, Single Stream)
+```
+→ `_block_prefix()`를 두 패턴으로 분기하고 블록 풀을 2개 유지해야 함
+
+**Wan 2.1:** ltx-flash와 동일한 비디오 도메인, Apache 2.0, 14B는 스트리밍 없이 실행 불가 → SSD 스트리밍 가치 최고. 단 블록당 크기가 3배라 cold 상태 I/O 병목 심화.
+
+**HiDream 보류 이유:** MoE 구조(4 expert 중 2 active)가 블록 단위 스트리밍과 근본적으로 상충, MLX 포팅 미존재.
 
 ### 성능 기준치 (M4 Max 36GB)
 

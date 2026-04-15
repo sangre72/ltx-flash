@@ -434,14 +434,55 @@ ltx-flash는 safetensors 헤더의 dtype을 읽어 자동으로 처리하며, BF
 
 | 구성요소 | 작업 |
 |---------|------|
-| `BlockIndex` | 재사용 |
+| `BlockIndex` | 재사용 (블록 키 패턴만 변경) |
 | `SSDBlockLoader` | 재사용 |
-| `SSDStreamingLTXModel` | 새로 작성 (블록 키 패턴, forward() 방식이 모델마다 다름) |
+| `SSDStreamingXxxModel` | 새로 작성 (모델별 블록 키 패턴, forward() 방식이 다름) |
 | `generate.py` | 새로 작성 (파이프라인 연결) |
 
 전제 조건: 해당 모델의 **MLX 포팅이 존재**해야 합니다.
 
-가장 유력한 다음 타겟: **FLUX.1** — DiT 57블록, 블록 구조가 LTX와 유사, `mlx-community/FLUX.1-dev-4bit` 존재
+#### 포팅 후보 모델 비교
+
+| 모델 | 타입 | 블록 수 | BF16 크기 | MLX 포팅 | 포팅 난이도 | SSD 스트리밍 가치 |
+|------|------|---------|-----------|---------|------------|----------------|
+| **FLUX.1** | 이미지 | 57 (19+38) | ~23.8GB | [mflux](https://github.com/filipstrand/mflux) (성숙) | **하~중** | 중 |
+| **SD3.5 Large** | 이미지 | 38 | ~16.5GB | [DiffusionKit](https://github.com/argmaxinc/DiffusionKit) | **중** | 중하 |
+| **Wan 2.1 (14B)** | 비디오 | 40 | ~28.6GB | [mlx-video](https://github.com/Blaizzy/mlx-video) | **중~상** | **최고** |
+| **HiDream-I1** | 이미지 | 48 (16+32) | ~34GB | 없음 | **상** | 상 |
+
+#### 1순위 — FLUX.1
+
+- DiT 구조, safetensors 포맷, 블록 키만 변경하면 `BlockIndex` 거의 그대로 재사용
+- 블록 타입이 **Double Stream**(19블록)과 **Single Stream**(38블록) 2종 — 블록 풀을 2개 유지하는 처리 필요
+- mflux가 MLX 네이티브로 성숙한 참조 구현 제공
+- FLUX.1 schnell: Apache 2.0 (상업 사용 자유) / dev: 비상업 라이센스
+
+```
+블록 키 패턴:
+  LTX-2.3:  transformer.transformer_blocks.{N}.*
+  FLUX.1:   double_blocks.{N}.*  (0-18)
+            single_blocks.{N}.*  (0-37)
+```
+
+#### 2순위 — Wan 2.1 (14B)
+
+- ltx-flash와 동일한 **비디오 도메인** — 경험이 가장 직접 적용됨
+- 14B 모델은 M4 Max 36GB에서 스트리밍 없이 실행 불가 → SSD 스트리밍 가치 최고
+- Wan2.2-mlx가 MLX 네이티브 참조 구현 제공
+- 블록당 크기 ~715MB (LTX-2.3의 3배) → cold 상태 SSD I/O 병목 심화
+- Apache 2.0 라이센스 (상업 사용 자유)
+
+#### 3순위 — SD3.5 Large
+
+- 블록 키 패턴이 LTX-2.3과 가장 유사 (`transformer_blocks.{N}.*`)
+- 8.1B 모델은 양자화 없이도 36GB RAM에 들어갈 수 있어 스트리밍 가치 상대적으로 낮음
+- Stability AI Community License (연매출 $1M 이상 시 별도 계약 필요)
+
+#### 보류 — HiDream-I1
+
+- MLX 네이티브 포팅 없음 (2026년 4월 기준)
+- MoE 구조(4 expert 중 2 active)로 블록 단위 스트리밍과 근본적으로 상충
+- Apple Silicon 호환성 미확인 보고 있음
 
 ---
 
