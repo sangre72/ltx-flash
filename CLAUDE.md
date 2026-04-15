@@ -134,6 +134,28 @@ N-ahead prefetch가 가능한 이유: 다음 블록 번호가 항상 현재+1로
 - **cold 상태(첫 step)만 ~2초 손해** — SSD I/O ~45ms/블록이 추가되지만 이후 수렴
 - **ltx-flash의 가치는 속도가 아니라 실행 가능/불가능의 차이** — RAM이 충분해도 속도 손해는 미미
 
+### 다른 모델 적용 가능성
+
+**같은 모델의 비양자화(BF16) 버전** — 코드 변경 없음. `--model` 경로만 교체하면 됩니다.
+
+- safetensors 헤더에 dtype 정보가 포함되어 있고, ltx-flash는 이미 BF16 처리 경로(`np.uint16 → mx.bfloat16`)를 갖고 있음
+- 블록 키 패턴, 파일 구조 동일 → 블록당 크기만 ~225MB → ~450MB로 증가
+
+| | q4 (양자화) | BF16 (원본) |
+|---|---|---|
+| 코드 변경 | 없음 | 없음 |
+| 블록당 크기 | ~225MB | ~450MB |
+| 속도 | 현재 | SSD I/O 소폭 증가, GPU 연산 동일 |
+
+**다른 모델(FLUX.1, SD3, Wan 등)** — 부분 포팅 필요.
+
+- `BlockIndex`, `SSDBlockLoader` — **재사용 가능** (핵심 엔진)
+- `SSDStreamingLTXModel` — **새로 작성** (모델별 블록 키 패턴, 비블록 가중치 목록, forward() 방식이 다름)
+- `generate.py` — **새로 작성** (파이프라인 연결)
+- 전제 조건: 해당 모델의 MLX 포팅이 존재해야 함
+
+가장 유력한 다음 타겟: **FLUX.1** (`mlx-community/FLUX.1-dev-4bit`, DiT 57블록, 블록 구조 LTX와 유사)
+
 ### 성능 기준치 (M4 Max 36GB)
 
 | 상태 | 블록당 SSD I/O | 블록당 GPU | step당 시간 |

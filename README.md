@@ -414,6 +414,37 @@ ltx-flash/
 
 ---
 
+## 다른 모델에 적용 가능한가?
+
+### 같은 모델의 비양자화(BF16) 버전 — 코드 변경 없음
+
+`--model` 경로만 BF16 모델 디렉토리로 바꾸면 그대로 실행됩니다.
+
+ltx-flash는 safetensors 헤더의 dtype을 읽어 자동으로 처리하며, BF16 경로(`np.uint16 → mx.bfloat16`)가 이미 구현되어 있습니다.
+
+| | q4 (양자화) | BF16 (원본) |
+|---|---|---|
+| 코드 변경 | 없음 | 없음 |
+| 블록당 크기 | ~225MB | ~450MB |
+| 속도 | 현재 | SSD I/O 소폭 증가, GPU 연산 동일 |
+
+### 다른 모델(FLUX.1, SD3, Wan 등) — 부분 포팅 필요
+
+핵심 엔진(`BlockIndex`, `SSDBlockLoader`)은 재사용 가능하고, 모델 연결 레이어만 새로 작성하면 됩니다.
+
+| 구성요소 | 작업 |
+|---------|------|
+| `BlockIndex` | 재사용 |
+| `SSDBlockLoader` | 재사용 |
+| `SSDStreamingLTXModel` | 새로 작성 (블록 키 패턴, forward() 방식이 모델마다 다름) |
+| `generate.py` | 새로 작성 (파이프라인 연결) |
+
+전제 조건: 해당 모델의 **MLX 포팅이 존재**해야 합니다.
+
+가장 유력한 다음 타겟: **FLUX.1** — DiT 57블록, 블록 구조가 LTX와 유사, `mlx-community/FLUX.1-dev-4bit` 존재
+
+---
+
 ## 한계
 
 - **Apple Silicon 전용**: MLX 프레임워크 기반, NVIDIA GPU 미지원
