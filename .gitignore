@@ -1,8 +1,46 @@
+# Python
 __pycache__/
 *.pyc
 *.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# 가상환경
 .venv/
+venv/
+.python-version
+
+# uv
+uv.lock
+
+# 모델 / 미디어 파일 (용량이 너무 커서 제외)
+*.safetensors
+*.gguf
+*.bin
+*.pt
+*.ckpt
 models/
 *.mp4
-*.safetensors
+*.mov
+*.wav
+*.png
+*.jpg
+*.jpeg
+
+# macOS
 .DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 테스트 출력
+/tmp/
+output*.mp4
