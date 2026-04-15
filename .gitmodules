@@ -1,0 +1,3 @@
+[submodule "ltx-2-mlx"]
+	path = ltx-2-mlx
+	url = https://github.com/dgrauet/ltx-2-mlx.git

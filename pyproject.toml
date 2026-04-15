@@ -1,0 +1,21 @@
+[project]
+name = "ltx-flash"
+version = "0.1.0"
+description = "Flash-MoE SSD block streaming for LTX-2.3 video diffusion on Apple Silicon"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "bumsuklee" }]
+keywords = ["mlx", "video-generation", "diffusion", "apple-silicon", "ssd-offloading", "flash-moe"]
+
+dependencies = [
+    "mlx>=0.30.0",
+    "numpy>=1.24",
+    "safetensors>=0.4",
+]
+
+[project.scripts]
+ltx-flash = "generate:main"
+
+[project.urls]
+Repository = "https://github.com/bumsuklee/ltx-flash"

@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+models/
+*.mp4
+*.safetensors
+.DS_Store
