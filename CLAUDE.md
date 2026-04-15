@@ -87,6 +87,29 @@ uv pip install -e ltx-2-mlx/packages/ltx-pipelines-mlx
 uv pip install -e .
 ```
 
+### 모델 파일 관리 방식
+
+**물리적 분리 없이 논리적 주소 접근** 방식을 사용한다.
+
+- `transformer-distilled.safetensors` 1개 파일을 디스크에 그대로 유지 (분리 안 함)
+- 시작 시 safetensors 헤더(JSON)를 파싱해 각 텐서의 byte offset을 `BlockIndex._offsets` dict에 인덱싱
+- 블록 N이 필요하면 `"transformer.transformer_blocks.N.*"` 키의 offset으로 `mmap[offset:offset+size]` 슬라이스만 읽음
+- 파일은 1개 10.5GB 그대로 — 읽는 위치만 달라짐
+
+### 블록 처리 순서 — 항상 고정
+
+Transformer는 입력이 블록 0 → 47까지 **순차적으로 통과**하는 고정 구조다.  
+"어떤 블록이 필요한지" 동적으로 판단하는 로직이 없다 — 항상 0→47을 전부 순서대로 처리한다.
+
+```
+각 디노이징 step: 블록 0 → 1 → 2 → ... → 47 (48개 전부)
+× N step 반복 (기본 30 step)
+```
+
+N-ahead prefetch가 가능한 이유: 다음 블록 번호가 항상 현재+1로 정해져 있으므로 예측 없이 미리 읽을 수 있다.
+
+> MoE처럼 라우팅으로 일부 expert만 선택하는 구조가 아님. "Flash-MoE"는 SSD 오프로딩 기법을 차용한 것이고 실제 동적 라우팅은 없음.
+
 ### 핵심 설계 원칙
 
 1. **mmap 우선**: OS page cache 직접 참조, bytearray 복사 없음 → warm 상태에서 극적으로 빠름

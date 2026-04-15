@@ -233,6 +233,48 @@ python generate.py generate -p "..." -o hq.mp4 \
 
 영상을 생성하면 내부적으로 다음 순서로 동작합니다.
 
+### 모델 파일 관리 방식 — 논리적 주소 접근
+
+ltx-flash는 모델 파일을 블록별로 **물리적으로 분리하지 않습니다.**  
+`transformer-distilled.safetensors` 1개 파일을 디스크에 그대로 두고, 필요한 위치만 골라 읽습니다.
+
+```
+파일: transformer-distilled.safetensors (10.5GB, 분리 없음)
+                  ↓
+safetensors 헤더(JSON) 파싱
+  → 각 텐서의 byte offset, size, dtype, shape를 BlockIndex에 인덱싱
+                  ↓
+블록 0 필요 시: "transformer.transformer_blocks.0.*" offset 조회
+               → mmap[offset:offset+size] 로 해당 위치만 읽기
+블록 1 필요 시: "transformer.transformer_blocks.1.*" offset 조회
+               → mmap[offset:offset+size] 로 해당 위치만 읽기
+               ...
+```
+
+책 전체를 챕터별로 찢지 않고, **페이지 번호를 기억해뒀다가 그 페이지만 펼쳐 읽는 방식**입니다.
+
+### 블록 처리 순서 — 항상 0→47 고정
+
+"어떤 블록이 필요한지" 판단하는 로직이 없습니다.  
+Transformer는 입력이 블록 0부터 47까지 **순차적으로 통과**하는 고정 구조라서, 항상 전부 순서대로 씁니다.
+
+```
+디노이징 1 step: 블록 0 → 블록 1 → ... → 블록 47  (48블록 전부)
+디노이징 2 step: 블록 0 → 블록 1 → ... → 블록 47  (또 48블록 전부)
+...총 N step 반복 (기본 30 step)
+```
+
+N-ahead prefetch가 가능한 이유도 같습니다.  
+"다음 블록이 뭔지 예측"하는 게 아니라, **다음 번호가 이미 정해져 있기 때문에** 미리 읽어둘 수 있습니다.
+
+```
+현재: 블록 3 GPU 연산 중
+prefetch: 블록 4, 5 백그라운드에서 SSD 읽기 시작
+→ 블록 3 끝나면 블록 4는 이미 RAM에 대기
+```
+
+---
+
 ### 1단계 — 초기화 (~1초)
 
 ```
