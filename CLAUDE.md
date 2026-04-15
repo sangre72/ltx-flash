@@ -121,6 +121,19 @@ N-ahead prefetch가 가능한 이유: 다음 블록 번호가 항상 현재+1로
 5. **BF16 처리**: numpy에 bfloat16 없으므로 uint16로 읽어 `mx.array().view(mx.bfloat16)` 변환
 6. **Metal 스레드 안전**: `mx.eval()`은 반드시 메인 스레드에서 호출 — IO 스레드에서 호출 시 Metal command buffer 충돌
 
+### RAM 상주 방식과 성능 비교
+
+| | RAM 전체 상주 | ltx-flash |
+|---|---|---|
+| 필요 RAM | ~38GB | ~3GB |
+| M4 Max 36GB에서 실행 | ❌ OOM | ✅ |
+| 첫 step | ~12초 | ~14초 (+2초) |
+| 이후 step (warm) | ~12초 | ~13초 (거의 동일) |
+
+- **warm 상태(2번째 step~)에서는 RAM 상주와 거의 동일한 속도** — GPU(~125ms/블록)가 압도적 병목이고, SSD I/O는 OS page cache로 ~0ms가 되어 숨겨지기 때문
+- **cold 상태(첫 step)만 ~2초 손해** — SSD I/O ~45ms/블록이 추가되지만 이후 수렴
+- **ltx-flash의 가치는 속도가 아니라 실행 가능/불가능의 차이** — RAM이 충분해도 속도 손해는 미미
+
 ### 성능 기준치 (M4 Max 36GB)
 
 | 상태 | 블록당 SSD I/O | 블록당 GPU | step당 시간 |
