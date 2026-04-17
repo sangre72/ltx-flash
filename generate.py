@@ -309,7 +309,7 @@ def _run_t2v(args, model_dir, cfg_scale, negative_prompt):
 # ──────────────────────────────────────────────
 
 def _run_i2v(args, model_dir, cfg_scale, negative_prompt):
-    from ltx_pipelines_mlx.ti2vid_one_stage import TextToVideoPipeline
+    from ltx_pipelines_mlx.ti2vid_one_stage import ImageToVideoPipeline
 
     image_path = args.image[0]
     if not Path(image_path).exists():
@@ -324,7 +324,7 @@ def _run_i2v(args, model_dir, cfg_scale, negative_prompt):
             print(f"CFG scale: {cfg_scale}")
         print(f"해상도: {args.width}×{args.height}, {args.frames}프레임, {args.steps}steps\n")
 
-    pipe = TextToVideoPipeline(model_dir=str(model_dir))
+    pipe = ImageToVideoPipeline(model_dir=str(model_dir))
     t0 = time.perf_counter()
 
     pipe.generate_and_save(
@@ -421,7 +421,14 @@ def _run_flf2v(args, model_dir, cfg_scale, negative_prompt):
             print(f"CFG scale: {cfg_scale}")
         print(f"해상도: {args.width}×{args.height}, {args.frames}프레임, steps={args.steps}\n")
 
-    pipe = KeyframeInterpolationPipeline(model_dir=str(model_dir))
+    # dev 모델 사용 (distilled 모델은 FLF2V 보간 시 hallucination 발생)
+    # transformer-dev.safetensors + distilled LoRA 조합으로 FLF2V 지원
+    pipe = KeyframeInterpolationPipeline(
+        model_dir=str(model_dir),
+        dev_transformer="transformer-dev.safetensors",
+        distilled_lora="ltx-2.3-22b-distilled-lora-384.safetensors",
+    )
+    # pipe = KeyframeInterpolationPipeline(model_dir=str(model_dir))  # distilled 전용 (FLF2V 불가)
     t0 = time.perf_counter()
 
     pipe.generate_and_save(
@@ -435,7 +442,7 @@ def _run_flf2v(args, model_dir, cfg_scale, negative_prompt):
         fps=getattr(args, "fps", 24.0),
         seed=args.seed,
         stage1_steps=args.steps,
-        cfg_scale=cfg_scale,
+        cfg_scale=cfg_scale if cfg_scale > 1.0 else 3.0,  # dev 모델은 cfg>1.0 필요
     )
 
     _print_result(args.output, t0)

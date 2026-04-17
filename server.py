@@ -14,12 +14,12 @@
 요청 JSON:
     {
         "prompt": str,
-        "image_b64": "data:image/png;base64,...",  # 첫 프레임
-        "width": 768,       # 선택 (기본 768)
-        "height": 512,      # 선택 (기본 512)
-        "frames": 25,       # 선택 (기본 25)
-        "steps": 30,        # 선택 (기본 30)
-        "seed": null        # 선택
+        "image_b64": "data:image/png;base64,...",
+        "width": 512,
+        "height": 768,
+        "frames": 25,
+        "steps": 30,
+        "seed": null
     }
 
 응답 JSON:
@@ -31,11 +31,11 @@
 """
 
 import base64
-import io
 import json
 import logging
 import os
 import signal
+import subprocess
 import tempfile
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -49,6 +49,8 @@ logging.basicConfig(
 logger = logging.getLogger("ltx-server")
 
 PORT = 18189
+_THIS_DIR = Path(__file__).parent
+_GENERATE_PY = _THIS_DIR / "generate.py"
 MODEL_DIR = Path.home() / "git/ltx-2-mlx/models/ltx-2.3-mlx-q4"
 
 
@@ -59,43 +61,57 @@ def _shutdown():
 
 
 def _generate_i2v(image_path: str, prompt: str, output_path: str,
-                  width: int, height: int, frames: int, steps: int, seed=None):
-    """LTX I2V 생성."""
-    import sys
-    sys.path.insert(0, str(Path(__file__).parent))
+                  width: int, height: int, frames: int, fps: int, steps: int,
+                  seed=None, cfg_scale: float = 4.0, negative_prompt: str = "",
+                  last_frame_path: str = None):
+    """generate.py subprocess로 I2V 생성.
 
-    import mlx.core as mx
-    import ltx_pipelines_mlx.ti2vid_one_stage as pipe_module
-    from ltx_pipelines_mlx.ti2vid_one_stage import TextToVideoPipeline
-    from ltx_pipelines_mlx.utils.constants import DEFAULT_NEGATIVE_PROMPT
-    from ltx_core_mlx.model.transformer.model import LTXModelConfig
-    from ltx_flash.ssd_stream import SSDStreamingLTXModel
+    last_frame_path 지정 시 flf2v 모드 (first+last frame 보간).
+    """
+    if last_frame_path:
+        # flf2v: first-frame + last-frame 보간
+        cmd = [
+            "uv", "run", "python", str(_GENERATE_PY), "generate",
+            "--prompt", prompt,
+            "--first-frame", image_path,
+            "--last-frame", last_frame_path,
+            "--output", output_path,
+            "--width", str(width),
+            "--height", str(height),
+            "--frames", str(frames),
+            "--fps", str(fps),
+            "--steps", str(steps),
+            "--model", str(MODEL_DIR),
+            "--cfg-scale", str(cfg_scale),
+        ]
+    else:
+        cmd = [
+            "uv", "run", "python", str(_GENERATE_PY), "generate",
+            "--prompt", prompt,
+            "--image", image_path,
+            "--output", output_path,
+            "--width", str(width),
+            "--height", str(height),
+            "--frames", str(frames),
+            "--fps", str(fps),
+            "--steps", str(steps),
+            "--model", str(MODEL_DIR),
+            "--cfg-scale", str(cfg_scale),
+        ]
+    if seed is not None:
+        cmd += ["--seed", str(seed)]
+    if negative_prompt:
+        cmd += ["--negative-prompt", negative_prompt]
 
-    logger.info(f"모델 로딩: {MODEL_DIR}")
-    sft_path = MODEL_DIR / "transformer-distilled.safetensors"
-    config = LTXModelConfig()
-    ssd_model = SSDStreamingLTXModel(sft_path, config)
-
-    # LTXModel 패치
-    original = pipe_module.LTXModel
-    pipe_module.LTXModel = lambda *a, **kw: ssd_model
-
-    try:
-        pipe = TextToVideoPipeline(model_dir=str(MODEL_DIR))
-        logger.info(f"I2V 생성: {width}x{height}, {frames}f, {steps}steps, prompt={prompt[:60]}...")
-        pipe.generate_and_save(
-            prompt=prompt,
-            output_path=output_path,
-            image=image_path,
-            height=height,
-            width=width,
-            num_frames=frames,
-            num_steps=steps,
-            seed=seed,
-        )
-    finally:
-        pipe_module.LTXModel = original
-        mx.metal.clear_cache()
+    mode = "FLF2V" if last_frame_path else "I2V"
+    logger.info(f"{mode} 생성: {width}x{height}, {frames}f@{fps}fps, {steps}steps, cfg={cfg_scale}, prompt={prompt[:60]}...")
+    result = subprocess.run(
+        cmd,
+        cwd=str(_THIS_DIR),
+        timeout=1200,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"generate.py 실패 (exit={result.returncode})")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -130,29 +146,43 @@ class Handler(BaseHTTPRequestHandler):
 
         prompt = body.get("prompt", "")
         image_b64 = body.get("image_b64", "")
-        width = int(body.get("width", 768))
-        height = int(body.get("height", 512))
-        frames = int(body.get("frames", 25))
+        image_last_b64 = body.get("image_last_b64", "")  # flf2v용 마지막 프레임
+        width = int(body.get("width", 512))
+        height = int(body.get("height", 768))
+        frames = int(body.get("frames", 145))
+        fps = int(body.get("fps", 14))
         steps = int(body.get("steps", 30))
         seed = body.get("seed", None)
+        cfg_scale = float(body.get("cfg_scale", 4.0))
+        negative_prompt = body.get("negative_prompt", "")
 
         if not image_b64:
             self._send_json(400, {"success": False, "error": "image_b64 필요"})
             return
+        if not prompt:
+            self._send_json(400, {"success": False, "error": "prompt 필요"})
+            return
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # 입력 이미지 저장
+                # 첫 프레임 이미지 저장
                 raw = image_b64.split(",", 1)[-1]
                 img_path = os.path.join(tmpdir, "input.png")
                 with open(img_path, "wb") as f:
                     f.write(base64.b64decode(raw))
 
-                # 출력 MP4 경로
+                # 마지막 프레임 이미지 (flf2v 모드)
+                last_path = None
+                if image_last_b64:
+                    raw_last = image_last_b64.split(",", 1)[-1]
+                    last_path = os.path.join(tmpdir, "input_last.png")
+                    with open(last_path, "wb") as f:
+                        f.write(base64.b64decode(raw_last))
+
                 out_path = os.path.join(tmpdir, "output.mp4")
 
                 t = time.time()
-                _generate_i2v(img_path, prompt, out_path, width, height, frames, steps, seed)
+                _generate_i2v(img_path, prompt, out_path, width, height, frames, fps, steps, seed, cfg_scale, negative_prompt, last_path)
                 elapsed = time.time() - t
 
                 if not Path(out_path).exists():
@@ -182,10 +212,14 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     if not MODEL_DIR.exists():
         logger.error(f"모델 없음: {MODEL_DIR}")
-        logger.error("huggingface-cli download dgrauet/ltx-2.3-mlx-q4 --local-dir ~/git/ltx-2-mlx/models/ltx-2.3-mlx-q4")
+        logger.error(f"필요: {MODEL_DIR}")
+        exit(1)
+    if not _GENERATE_PY.exists():
+        logger.error(f"generate.py 없음: {_GENERATE_PY}")
         exit(1)
 
     logger.info(f"ltx-server 시작 (port {PORT})")
+    logger.info(f"모델: {MODEL_DIR}")
     server = HTTPServer(("127.0.0.1", PORT), Handler)
     logger.info(f"Ready: http://127.0.0.1:{PORT}")
     server.serve_forever()
