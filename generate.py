@@ -336,6 +336,7 @@ def _run_i2v(args, model_dir, cfg_scale, negative_prompt):
         num_frames=args.frames,
         num_steps=args.steps,
         seed=args.seed,
+        fps=getattr(args, "fps", 24.0),
     )
 
     _print_result(args.output, t0)

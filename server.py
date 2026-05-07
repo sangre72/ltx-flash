@@ -1,33 +1,18 @@
-"""LTX-2.3 I2V HTTP 서버.
+"""LTX-2.3 HTTP 서버.
 
-이미지 + 텍스트 → MP4 영상 생성 (on-demand, 생성 후 프로세스 종료).
-프로세스 종료 = Metal GPU 메모리 완전 반환.
+T2V / I2V / FLF2V / TI2V 영상 생성.
 
-실행:
-    uv run python server.py
-
-포트: 18189
+포트: 18190
 엔드포인트:
     GET  /health    — 상태 확인
-    POST /generate  — I2V 영상 생성
+    POST /generate  — 영상 생성
 
-요청 JSON:
-    {
-        "prompt": str,
-        "image_b64": "data:image/png;base64,...",
-        "width": 512,
-        "height": 768,
-        "frames": 25,
-        "steps": 30,
-        "seed": null
-    }
-
-응답 JSON:
-    {
-        "success": true,
-        "video_b64": "data:video/mp4;base64,...",
-        "elapsed": 42.3
-    }
+요청 JSON (mode 자동 감지):
+    T2V  : { "prompt": str, ... }
+    I2V  : { "prompt": str, "image_b64": "data:...", ... }
+    FLF2V: { "prompt": str, "image_b64": "...", "image_last_b64": "...", ... }
+    TI2V : { "prompt": str, "keyframes": [{"image_b64":"...", "frame_index":0}, ...], ... }
+           frame_index 생략 시 균등 자동 배분.
 """
 
 import base64
@@ -48,7 +33,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("ltx-server")
 
-PORT = 18189
+PORT = 18190
 _THIS_DIR = Path(__file__).parent
 _GENERATE_PY = _THIS_DIR / "generate.py"
 MODEL_DIR = Path.home() / "git/ltx-2-mlx/models/ltx-2.3-mlx-q4"
@@ -60,58 +45,70 @@ def _shutdown():
     os.kill(os.getpid(), signal.SIGTERM)
 
 
-def _generate_i2v(image_path: str, prompt: str, output_path: str,
-                  width: int, height: int, frames: int, fps: int, steps: int,
-                  seed=None, cfg_scale: float = 4.0, negative_prompt: str = "",
-                  last_frame_path: str = None):
-    """generate.py subprocess로 I2V 생성.
-
-    last_frame_path 지정 시 flf2v 모드 (first+last frame 보간).
-    """
-    if last_frame_path:
-        # flf2v: first-frame + last-frame 보간
-        cmd = [
-            "uv", "run", "python", str(_GENERATE_PY), "generate",
-            "--prompt", prompt,
-            "--first-frame", image_path,
-            "--last-frame", last_frame_path,
-            "--output", output_path,
-            "--width", str(width),
-            "--height", str(height),
-            "--frames", str(frames),
-            "--fps", str(fps),
-            "--steps", str(steps),
-            "--model", str(MODEL_DIR),
-            "--cfg-scale", str(cfg_scale),
-        ]
-    else:
-        cmd = [
-            "uv", "run", "python", str(_GENERATE_PY), "generate",
-            "--prompt", prompt,
-            "--image", image_path,
-            "--output", output_path,
-            "--width", str(width),
-            "--height", str(height),
-            "--frames", str(frames),
-            "--fps", str(fps),
-            "--steps", str(steps),
-            "--model", str(MODEL_DIR),
-            "--cfg-scale", str(cfg_scale),
-        ]
+def _base_cmd(prompt: str, output_path: str, width: int, height: int,
+              frames: int, fps: int, steps: int, cfg_scale: float,
+              prefetch_depth: int, seed=None, negative_prompt: str = "") -> list:
+    cmd = [
+        "uv", "run", "python", str(_GENERATE_PY), "generate",
+        "--prompt", prompt,
+        "--output", output_path,
+        "--width", str(width), "--height", str(height),
+        "--frames", str(frames), "--fps", str(fps),
+        "--steps", str(steps), "--model", str(MODEL_DIR),
+        "--cfg-scale", str(cfg_scale),
+        "--prefetch-depth", str(prefetch_depth),
+        "--quiet",
+    ]
     if seed is not None:
         cmd += ["--seed", str(seed)]
     if negative_prompt:
         cmd += ["--negative-prompt", negative_prompt]
+    return cmd
 
-    mode = "FLF2V" if last_frame_path else "I2V"
-    logger.info(f"{mode} 생성: {width}x{height}, {frames}f@{fps}fps, {steps}steps, cfg={cfg_scale}, prompt={prompt[:60]}...")
-    result = subprocess.run(
-        cmd,
-        cwd=str(_THIS_DIR),
-        timeout=1200,
-    )
+
+def _run_cmd(cmd: list, mode: str, prompt: str):
+    logger.info(f"{mode}: prompt={prompt[:60]}...")
+    result = subprocess.run(cmd, cwd=str(_THIS_DIR), timeout=1200)
     if result.returncode != 0:
         raise RuntimeError(f"generate.py 실패 (exit={result.returncode})")
+
+
+def _generate(prompt: str, output_path: str, width: int, height: int,
+              frames: int, fps: int, steps: int, seed=None,
+              cfg_scale: float = 4.0, negative_prompt: str = "",
+              image_path: str = None, last_frame_path: str = None,
+              keyframe_paths: list = None, keyframe_indices: list = None,
+              prefetch_depth: int = 1):
+    """통합 생성 함수.
+
+    mode 자동 감지:
+      TI2V  : keyframe_paths 2장 이상
+      FLF2V : image_path + last_frame_path
+      I2V   : image_path만
+      T2V   : image_path 없음
+    """
+    cmd = _base_cmd(prompt, output_path, width, height, frames, fps, steps,
+                    cfg_scale, prefetch_depth, seed, negative_prompt)
+
+    if keyframe_paths and len(keyframe_paths) >= 2:
+        # TI2V — 여러 키프레임 보간
+        for p in keyframe_paths:
+            cmd += ["--image", p]
+        if keyframe_indices:
+            for idx in keyframe_indices:
+                cmd += ["--image-index", str(idx)]
+        _run_cmd(cmd, "TI2V", prompt)
+    elif image_path and last_frame_path:
+        # FLF2V
+        cmd += ["--first-frame", image_path, "--last-frame", last_frame_path]
+        _run_cmd(cmd, "FLF2V", prompt)
+    elif image_path:
+        # I2V
+        cmd += ["--image", image_path]
+        _run_cmd(cmd, "I2V", prompt)
+    else:
+        # T2V
+        _run_cmd(cmd, "T2V", prompt)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -133,6 +130,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self):
+        if self.path == "/shutdown":
+            self._send_json(200, {"success": True})
+            Timer(0.5, _shutdown).start()
+            return
         if self.path != "/generate":
             self._send_json(404, {"error": "not found"})
             return
@@ -147,6 +148,7 @@ class Handler(BaseHTTPRequestHandler):
         prompt = body.get("prompt", "")
         image_b64 = body.get("image_b64", "")
         image_last_b64 = body.get("image_last_b64", "")  # flf2v용 마지막 프레임
+        keyframes = body.get("keyframes", [])  # TI2V: [{image_b64, frame_index?}]
         width = int(body.get("width", 512))
         height = int(body.get("height", 768))
         frames = int(body.get("frames", 145))
@@ -155,34 +157,46 @@ class Handler(BaseHTTPRequestHandler):
         seed = body.get("seed", None)
         cfg_scale = float(body.get("cfg_scale", 4.0))
         negative_prompt = body.get("negative_prompt", "")
+        prefetch_depth = int(body.get("prefetch_depth", 1))
 
-        if not image_b64:
-            self._send_json(400, {"success": False, "error": "image_b64 필요"})
-            return
         if not prompt:
             self._send_json(400, {"success": False, "error": "prompt 필요"})
             return
 
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
-                # 첫 프레임 이미지 저장
-                raw = image_b64.split(",", 1)[-1]
-                img_path = os.path.join(tmpdir, "input.png")
-                with open(img_path, "wb") as f:
-                    f.write(base64.b64decode(raw))
+                def _save_b64(b64str: str, name: str) -> str:
+                    raw = b64str.split(",", 1)[-1]
+                    p = os.path.join(tmpdir, name)
+                    with open(p, "wb") as f:
+                        f.write(base64.b64decode(raw))
+                    return p
 
-                # 마지막 프레임 이미지 (flf2v 모드)
-                last_path = None
-                if image_last_b64:
-                    raw_last = image_last_b64.split(",", 1)[-1]
-                    last_path = os.path.join(tmpdir, "input_last.png")
-                    with open(last_path, "wb") as f:
-                        f.write(base64.b64decode(raw_last))
+                img_path = _save_b64(image_b64, "input.png") if image_b64 else None
+                last_path = _save_b64(image_last_b64, "input_last.png") if image_last_b64 else None
+
+                # TI2V 키프레임 처리
+                kf_paths, kf_indices = [], []
+                for i, kf in enumerate(keyframes):
+                    if not kf.get("image_b64"):
+                        continue
+                    kp = _save_b64(kf["image_b64"], f"kf_{i:02d}.png")
+                    kf_paths.append(kp)
+                    if kf.get("frame_index") is not None:
+                        kf_indices.append(int(kf["frame_index"]))
 
                 out_path = os.path.join(tmpdir, "output.mp4")
-
                 t = time.time()
-                _generate_i2v(img_path, prompt, out_path, width, height, frames, fps, steps, seed, cfg_scale, negative_prompt, last_path)
+                _generate(
+                    prompt=prompt, output_path=out_path,
+                    width=width, height=height, frames=frames, fps=fps,
+                    steps=steps, seed=seed, cfg_scale=cfg_scale,
+                    negative_prompt=negative_prompt,
+                    image_path=img_path, last_frame_path=last_path,
+                    keyframe_paths=kf_paths or None,
+                    keyframe_indices=kf_indices or None,
+                    prefetch_depth=prefetch_depth,
+                )
                 elapsed = time.time() - t
 
                 if not Path(out_path).exists():
@@ -190,13 +204,11 @@ class Handler(BaseHTTPRequestHandler):
                     return
 
                 video_bytes = Path(out_path).read_bytes()
-                video_b64 = base64.b64encode(video_bytes).decode()
-                size_kb = len(video_bytes) // 1024
-                logger.info(f"생성 완료: {elapsed:.1f}s, {size_kb}KB")
-
+                video_b64_out = base64.b64encode(video_bytes).decode()
+                logger.info(f"생성 완료: {elapsed:.1f}s, {len(video_bytes)//1024}KB")
                 self._send_json(200, {
                     "success": True,
-                    "video_b64": f"data:video/mp4;base64,{video_b64}",
+                    "video_b64": f"data:video/mp4;base64,{video_b64_out}",
                     "elapsed": elapsed,
                 })
 
@@ -204,9 +216,9 @@ class Handler(BaseHTTPRequestHandler):
             logger.error(f"생성 실패: {e}", exc_info=True)
             self._send_json(500, {"success": False, "error": str(e)})
 
-        finally:
-            # 응답 후 프로세스 종료 → GPU 메모리 반환
-            Timer(0.5, _shutdown).start()
+        # 데몬 상주 방식: 요청 후 자살하지 않음.
+        # generate.py 서브프로세스가 종료되면서 Metal GPU 메모리는 자동 해제됨.
+        # 명시 종료가 필요하면 클라이언트가 POST /shutdown 호출.
 
 
 if __name__ == "__main__":
