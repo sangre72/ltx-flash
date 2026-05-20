@@ -153,11 +153,11 @@ class Handler(BaseHTTPRequestHandler):
         height = int(body.get("height", 768))
         frames = int(body.get("frames", 145))
         fps = int(body.get("fps", 14))
-        steps = int(body.get("steps", 30))
+        steps = int(body.get("steps", 20))
         seed = body.get("seed", None)
-        cfg_scale = float(body.get("cfg_scale", 4.0))
+        cfg_scale = float(body.get("cfg_scale", 1.0))
         negative_prompt = body.get("negative_prompt", "")
-        prefetch_depth = int(body.get("prefetch_depth", 1))
+        prefetch_depth = int(body.get("prefetch_depth", 2))
 
         if not prompt:
             self._send_json(400, {"success": False, "error": "prompt 필요"})
